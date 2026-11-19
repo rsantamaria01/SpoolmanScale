@@ -7,7 +7,8 @@ This file, the `esp32-brady-test` env and anything under `fork/` are fork-only. 
 ## Current mode
 - Integration branch: `brady-m211` on `origin` (rsantamaria01/SpoolmanScale). Job branches come off it.
 - Push gate: push your job branch to `origin` and open a PR into `brady-m211`. Raul merges. Never push to `brady-m211` or `main` directly.
-- Never push to, or open PRs or issues against, `upstream` (Niko11111/SpoolmanScale). Raul decides when to go upstream.
+- The only remote is `origin` (the fork). Niko11111/SpoolmanScale is deliberately not configured as a remote: never add it, push to it, or open PRs or issues there. After hardware testing, Raul opens the upstream PR himself from the fork.
+- Upstream's `.gitignore` ignores everything except a whitelist (`src/`, `test/`, `scripts/`, `tools/`, `platformio.ini` ...). Commit fork-only paths such as `fork/` with `git add -f`; never edit `.gitignore` for them. Check `git status --ignored` before every commit so no new file is silently left out.
 - CI: upstream workflows may run on the fork; they must stay green for `wt32-sc01-plus`.
 
 ## Upstream-friendly rules
