@@ -134,9 +134,10 @@ static void copyDevice(BleDevice& out, const NimBLEAdvertisedDevice* dev) {
 // Static lifetime: a late host callback must never reach a returned stack frame.
 class DiscoveryCallbacks : public NimBLEScanCallbacks {
  public:
-  void bind(BleCandidates* candidates) {
+  void bind(BleCandidates* candidates, const char* service_uuid = nullptr) {
     portENTER_CRITICAL(&mux_);
     candidates_ = candidates;
+    service_uuid_ = service_uuid;
     reports_ = 0;
     portEXIT_CRITICAL(&mux_);
   }
@@ -144,7 +145,10 @@ class DiscoveryCallbacks : public NimBLEScanCallbacks {
     BleDevice record{};
     copyDevice(record, dev);
     portENTER_CRITICAL(&mux_);
-    if (candidates_) { candidates_->observe(record); ++reports_; }
+    if (candidates_ && (!service_uuid_ || dev->isAdvertisingService(NimBLEUUID(service_uuid_)))) {
+      candidates_->observe(record);
+      ++reports_;
+    }
     portEXIT_CRITICAL(&mux_);
   }
   int count() {
@@ -165,12 +169,20 @@ class DiscoveryCallbacks : public NimBLEScanCallbacks {
  private:
   portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
   BleCandidates* candidates_ = nullptr;
+  const char* service_uuid_ = nullptr;
   unsigned reports_ = 0;
 };
 static DiscoveryCallbacks discovery;
 
 int bleScan(BleDevice* out, int capacity, uint32_t duration_ms, BleProgressFn progress,
             const char* preferred) {
+  return bleScan(out, capacity, BleScanConfig{duration_ms, progress, preferred});
+}
+
+int bleScan(BleDevice* out, int capacity, const BleScanConfig& config) {
+  const uint32_t duration_ms = config.duration_ms;
+  const BleProgressFn progress = config.progress;
+  const char* preferred = config.preferred ? config.preferred : "";
   if (!out || capacity <= 0) return 0;
   if (!g_ble_enabled || s_stuck) return -1;
   if (!stackMayStart(progress)) return -1;
@@ -196,7 +208,7 @@ int bleScan(BleDevice* out, int capacity, uint32_t duration_ms, BleProgressFn pr
     // second, and every report is work on the host task.
     scan->setDuplicateFilter(true);
     BleCandidates candidates(out, capacity, preferred, false);
-    discovery.bind(&candidates);
+    discovery.bind(&candidates, config.service_uuid);
     scan->setScanCallbacks(&discovery);
     // Deliver every result; do not fill NimBLE's cache with the first neighbours.
     scan->setMaxResults(0);
@@ -526,6 +538,8 @@ BleWriteResult bleWriteBlocks(const char* address, uint16_t service_uuid,
 
 static NimBLEClient* s_talk_client = nullptr;
 static NimBLERemoteCharacteristic* s_talk_chr = nullptr;
+static NimBLERemoteService* s_talk_service = nullptr;
+static bool s_talk_no_replay = false;
 static bool s_talk_response = false;   // the characteristic takes writes with response only
 // One writer (the host task) and one reader (the loop), each owning its own
 // index: no lock. A full ring drops bytes and counts them. The two run on
@@ -534,12 +548,13 @@ static bool s_talk_response = false;   // the characteristic takes writes with r
 static uint8_t s_rx[BLE_TALK_RX_SIZE];
 static volatile uint16_t s_rx_head = 0, s_rx_tail = 0;
 static volatile uint16_t s_rx_lost = 0;
+static volatile bool s_rx_overflow = false;
 
 // Host task, 4 kB of stack: copy and leave, no log.
 static void onTalkNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
   for (size_t i = 0; i < len; i++) {
     const uint16_t next = (s_rx_head + 1) & (BLE_TALK_RX_SIZE - 1);
-    if (next == s_rx_tail) { s_rx_lost = s_rx_lost + 1; continue; }
+    if (next == s_rx_tail) { s_rx_overflow = true; s_rx_lost = s_rx_lost + 1; continue; }
     s_rx[s_rx_head] = data[i];
     __sync_synchronize();   // the byte is in before the head says so
     s_rx_head = next;
@@ -615,6 +630,12 @@ static NimBLERemoteCharacteristic* firstWithProps(NimBLERemoteService* s, uint8_
 // for; failing the service, the first such characteristic anywhere, which
 // the log calls a fallback so a wrong UUID in a driver shows.
 static NimBLERemoteCharacteristic* talkPick(NimBLEClient* client, const BleTalkEndpoint& ep) {
+  if (ep.write_uuid || ep.notify_uuid) {
+    NimBLERemoteService* service = client->getService(ep.service_uuid);
+    if (!service || !ep.write_uuid || !ep.notify_uuid) return nullptr;
+    NimBLERemoteCharacteristic* c = service->getCharacteristic(NimBLEUUID(ep.write_uuid));
+    return c && hasProps(c, ep.need_props) ? c : nullptr;
+  }
   NimBLERemoteCharacteristic* c = firstWithProps(client->getService(ep.service_uuid), ep.need_props);
   if (c) return c;
   for (NimBLERemoteService* s : client->getServices(false)) {
@@ -668,16 +689,34 @@ BleWriteResult bleTalkOpen(const char* address, const BleTalkEndpoint& ep, BlePr
   s_rx_head = 0;
   s_rx_tail = 0;
   s_rx_lost = 0;
-  if ((ep.need_props & BLE_PROP_NOTIFY) && !chr->subscribe(true, onTalkNotify)) {
+  s_rx_overflow = false;
+  s_talk_service = client->getService(ep.service_uuid);
+  NimBLERemoteCharacteristic* notify = ep.notify_uuid && s_talk_service
+      ? s_talk_service->getCharacteristic(NimBLEUUID(ep.notify_uuid)) : chr;
+  const bool wants_notify = ep.notify_uuid || (ep.need_props & BLE_PROP_NOTIFY);
+  if (wants_notify && (!notify || (!notify->canNotify() && !notify->canIndicate()) ||
+                      !notify->subscribe(notify->canNotify(), onTalkNotify))) {
     logSDf("BLE: %s: subscribe to %s failed", address, chr->getUUID().toString().c_str());
     bleTalkClose();
     return BLE_WRITE_NO_CHARACTERISTIC;
   }
   s_talk_chr = chr;
   s_talk_response = !chr->canWriteNoResponse();
+  s_talk_no_replay = ep.write_uuid != nullptr;
   logSDf("BLE: talk %s mtu=%u chr=%s response=%u", address, (unsigned)client->getMTU(),
          chr->getUUID().toString().c_str(), (unsigned)s_talk_response);
   return BLE_WRITE_OK;
+}
+
+bool bleTalkSelectWrite(const char* uuid, bool response) {
+  s_talk_chr = nullptr;
+  if (!bleTalkConnected() || !s_talk_service || !uuid || !uuid[0]) return false;
+  NimBLERemoteCharacteristic* c = s_talk_service->getCharacteristic(NimBLEUUID(uuid));
+  if (!c || (response ? !c->canWrite() : !c->canWriteNoResponse())) return false;
+  s_talk_chr = c;
+  s_talk_response = response;
+  s_talk_no_replay = true;
+  return true;
 }
 
 size_t bleTalkMaxWrite() {
@@ -691,7 +730,7 @@ static bool talkWritePiece(const uint8_t* data, size_t n) {
   for (int tries = 0;; tries++) {
     if (!s_talk_client->isConnected()) { logSD("BLE: link dropped during a write"); return false; }
     if (s_talk_chr->writeValue(data, n, s_talk_response)) return true;
-    if (tries >= BLE_WRITE_RETRIES) {
+    if (s_talk_no_replay || tries >= BLE_WRITE_RETRIES) {
       logSDf("BLE: write refused, rc=%d, gave up after %d tries", s_talk_client->getLastError(), tries);
       return false;
     }
@@ -711,7 +750,7 @@ bool bleTalkSend(const uint8_t* data, size_t n) {
 }
 
 size_t bleTalkRead(uint8_t* out, size_t max, uint32_t wait_ms) {
-  if (!out || !max || !s_talk_client) return 0;
+  if (!out || !max || !s_talk_client || (s_talk_no_replay && s_rx_overflow)) return 0;
   const uint32_t from = millis();
   while (s_rx_head == s_rx_tail) {
     if (!s_talk_client->isConnected() || millis() - from >= wait_ms) return 0;
@@ -732,6 +771,7 @@ size_t bleTalkRead(uint8_t* out, size_t max, uint32_t wait_ms) {
   return n;
 }
 
+bool bleTalkRxOverflowed() { return s_rx_overflow; }
 bool bleTalkConnected() { return s_talk_client && s_talk_client->isConnected(); }
 void bleTalkSetPhase(BleSessionPhase phase) { if (s_talk_client) s_phase = phase; }
 void bleTalkSetProgress(size_t done, size_t total) { s_sent = done; s_total = total; }
@@ -740,6 +780,7 @@ BleWriteResult bleTalkClose() {
   NimBLEClient* client = s_talk_client;
   if (!client) return BLE_WRITE_OK;
   s_talk_chr = nullptr;
+  s_talk_service = nullptr;
   s_phase = BLE_PHASE_IDLE;
   crumbSet("ble disconnect");
   if (client->isConnected()) client->disconnect();
