@@ -15,6 +15,7 @@ static std::string selected;
 static unsigned sends=0;
 static bool fail_send=false;
 static int terminal=0;
+static BradySession* active_session=nullptr;
 static void queueStatus(const char* text);
 bool bleTalkConnected(){return connected;}
 bool bleTalkRxOverflowed(){return false;}
@@ -24,7 +25,8 @@ bool bleTalkSelectWrite(const char* uuid,bool){selected=uuid;return connected;}
 bool bleTalkSend(const uint8_t* data,size_t){
  ++sends;
  if(terminal && selected==BRADY_PRINT && data[0]==3){
- queueStatus(terminal==1 ? "fresh: Successful" : "old: Successful");
+ std::string text = terminal==1 ? std::string(active_session->job_name)+": Successful" : "old: Successful";
+ queueStatus(text.c_str());
  }
  return connected && !fail_send;
 }
@@ -93,6 +95,13 @@ int main(){
  property(s,"0029","old-job: Failed");assert(s.status.job==BRADY_JOB_PENDING);
  property(s,"0029","new-job: Successful");assert(s.status.job==BRADY_JOB_SUCCESS);
  property(s,"0029","new-job: Failed");assert(s.status.job==BRADY_JOB_FAILED);
+ for(auto entry:{
+ "{\"ID\":\"000C\",\"Value\":\"125\\u0000junk\",\"Status\":\"Successful\"}",
+ "{\"ID\":\"0025\",\"Value\":\"False\\u0000True\",\"Status\":\"Successful\"}",
+ "{\"ID\":\"0029\",\"Value\":\"new-job: Successful\\u0000junk\",\"Status\":\"Successful\"}"}){
+ BradySession bad{};auto text=std::string("{\"PropertyGetResponses\":[")+entry+"]}";
+ auto invalid=packet(text.c_str());assert(!bradyReceive(bad,invalid.data(),invalid.size()));
+ }
  BradySession malformed{};p=packet("{}");p[16]=0xff;p[17]=0xff;
  assert(!bradyReceive(malformed,p.data(),p.size())&&malformed.status.valid==0);
  malformed={};p=packet("{}");p[0]=0;assert(!bradyReceive(malformed,p.data(),p.size()));
@@ -112,8 +121,22 @@ int main(){
  unsigned before=sends;assert(bradyPrint(s,image,"offline")==BRADY_TRANSPORT&&sends==before);
  connected=true;s.open=true;s.status={};assert(bradyPrint(s,image,"unsafe")==BRADY_INVALID_STATUS&&sends==before);
  bradyClose(s);assert(!connected&&!s.open);
- connected=true;s.open=true;s.status=geometry;terminal=1;
+ connected=true;s.open=true;s.status=geometry;
+ std::string harmless="{\"PropertyGetResponses\":[]}";harmless.resize(236,' ');
+ auto queued=packet(harmless.c_str());incoming=queued;
+ auto error=packet("{\"PropertyGetResponses\":[{\"ID\":\"0025\",\"Value\":\"True\",\"Status\":\"Successful\"}]}");
+ incoming.insert(incoming.end(),error.begin(),error.end());before=sends;
+ assert(bradyPrint(s,image,"unsafe-queue")==BRADY_INVALID_STATUS&&sends==before);
+ s.status=geometry;incoming=queued;incoming.insert(incoming.end(),error.begin(),error.end());
+ assert(bradyCut(s)==BRADY_INVALID_STATUS&&sends==before);
+ s.status=geometry;terminal=1;active_session=&s;
  assert(bradyPrint(s,image,"fresh")==BRADY_OK);
+ const std::string first_name=s.job_name;
+ assert(bradyPrint(s,image,"other")==BRADY_OK);
+ assert(bradyPrint(s,image,"fresh")==BRADY_OK);
+ assert(first_name!=s.job_name);
+ bradyClose(s);s={};s.open=true;connected=true;s.status=geometry;
+ assert(bradyPrint(s,image,"fresh")==BRADY_OK && first_name!=s.job_name);
  terminal=2;assert(bradyPrint(s,image,"newer")==BRADY_UNCONFIRMED);
  fail_send=true;before=sends;assert(bradyPrint(s,image,"ambiguous")==BRADY_UNCONFIRMED&&sends==before+1);
  bradyClose(s);fail_send=false;
@@ -127,6 +150,7 @@ int main(){
 with tempfile.TemporaryDirectory() as tmp:
     tmp = Path(tmp)
     (tmp / "Arduino.h").write_text('#pragma once\n#include <cstdint>\ninline uint32_t ticks=0;\ninline uint32_t millis(){return ticks++;}\ninline void delay(uint32_t n){ticks+=n;}\n')
+    (tmp / "esp_random.h").write_text('#pragma once\n#include <cstdint>\ninline uint32_t esp_random(){return 0x12345678;}\n')
     (tmp / "hardware").mkdir()
     (tmp / "hardware/sd_logger.h").write_text('#pragma once\ninline void logSD(const char*){}\ntemplate<class... T> void logSDf(const char*,T...){}\n')
     (tmp / "test.cpp").write_text(source)

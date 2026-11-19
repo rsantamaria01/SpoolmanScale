@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <esp_random.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -125,7 +126,13 @@ static bool parsePicl(BradySession& s, const uint8_t* json, size_t length) {
   JsonDocument doc;
   if (deserializeJson(doc, json, length, DeserializationOption::NestingLimit(5))) return false;
   if (!doc["PropertyGetResponses"].is<JsonArray>()) return false;
-  for (JsonObjectConst item : doc["PropertyGetResponses"].as<JsonArrayConst>()) applyProperty(s, item);
+  for (JsonObjectConst item : doc["PropertyGetResponses"].as<JsonArrayConst>()) {
+    for (const char* key : {"ID", "Value", "Status"}) {
+      const JsonString text = item[key].as<JsonString>();
+      if (text && strlen(text.c_str()) != text.size()) return false;
+    }
+    applyProperty(s, item);
+  }
   return true;
 }
 bool bradyReceive(BradySession& s, const uint8_t* data, size_t length) {
@@ -211,6 +218,16 @@ static bool pump(BradySession& s, uint32_t wait_ms) {
   if (bleTalkRxOverflowed()) { s.malformed = true; s.status.valid = 0; return false; }
   return bradyReceive(s,bytes,n) && bleTalkConnected();
 }
+static bool drain(BradySession& s) {
+  const uint32_t from = millis();
+  uint8_t bytes[256];
+  do {
+    const size_t n = bleTalkRead(bytes,sizeof(bytes),0);
+    if (bleTalkRxOverflowed() || !bradyReceive(s,bytes,n) || !bleTalkConnected()) return false;
+    if (!n) return !s.received;
+  } while (millis() - from < 1000);
+  return false;
+}
 static bool sendChunks(BradySession& s, const char* characteristic, BleBlock block) {
   if (!bleTalkSelectWrite(characteristic,true)) return false;
   BradyChunks chunks;
@@ -261,13 +278,20 @@ BradyResult bradyOpen(const char* address, const BradyOwnership& ownership, Brad
 }
 BradyResult bradyPrint(BradySession& s, const LabelRaster& image, const char* name) {
   if (!s.open || !bleTalkConnected()) return BRADY_TRANSPORT;
-  if (!pump(s,0) || s.malformed || s.received || !bradyReady(s.status)) return BRADY_INVALID_STATUS;
-  if (!jobNameValid(name) || strcmp(name,s.job_name) == 0) return BRADY_INVALID_RASTER;
+  if (!drain(s) || s.malformed || !bradyReady(s.status)) return BRADY_INVALID_STATUS;
+  if (!jobNameValid(name)) return BRADY_INVALID_RASTER;
+  // A boot nonce plus monotonic counter survives session reopen and caller name reuse.
+  static const uint32_t nonce = esp_random();
+  static uint32_t sequence = 0;
+  if (sequence == UINT32_MAX) return BRADY_INVALID_RASTER;
+  char wire_name[21];
+  snprintf(wire_name,sizeof(wire_name),"%08lx-%08lx",(unsigned long)nonce,(unsigned long)++sequence);
   uint8_t* bytes = static_cast<uint8_t*>(malloc(BRADY_MAX_JOB_BYTES));
   if (!bytes) return BRADY_INVALID_RASTER;
-  const size_t n = bradyVgl(image,s.status,name,bytes,BRADY_MAX_JOB_BYTES);
+  const size_t n = bradyVgl(image,s.status,wire_name,bytes,BRADY_MAX_JOB_BYTES);
   if (!n) { free(bytes); return BRADY_INVALID_RASTER; }
-  snprintf(s.job_name,sizeof(s.job_name),"%s",name); s.status.job = BRADY_JOB_PENDING;
+  snprintf(s.job_name,sizeof(s.job_name),"%s",wire_name); s.status.job = BRADY_JOB_PENDING;
+  logSDf("Brady: submit %s as job %s",name,s.job_name);
   const bool sent = sendChunks(s,BRADY_PRINT,{bytes,n});
   free(bytes);
   // Some bytes may have landed even on failure; never replay this job automatically.
@@ -277,14 +301,14 @@ BradyResult bradyPrint(BradySession& s, const LabelRaster& image, const char* na
     if (!pump(s,50)) return BRADY_UNCONFIRMED;
     if (s.status.errors || s.status.job == BRADY_JOB_FAILED) return BRADY_DEVICE_ERROR;
     if (s.status.job == BRADY_JOB_SUCCESS) {
-      logSDf("Brady: job %s Successful",name); return BRADY_OK;
+      logSDf("Brady: job %s Successful",s.job_name); return BRADY_OK;
     }
   }
   return BRADY_UNCONFIRMED;
 }
 BradyResult bradyCut(BradySession& s) {
   if (!s.open || !bleTalkConnected()) return BRADY_TRANSPORT;
-  if (!pump(s,0) || !bradyReady(s.status)) return BRADY_INVALID_STATUS;
+  if (!drain(s) || !bradyReady(s.status)) return BRADY_INVALID_STATUS;
   return request(s,"{\"PropertySetRequests\":[{\"ID\":\"0004\",\"Value\":\"True\"}]}")
       ? BRADY_UNCONFIRMED : BRADY_TRANSPORT;
 }

@@ -49,6 +49,7 @@ size_t bradyVgl(const LabelRaster& image, const BradyStatus& status, const char*
                uint8_t* out, size_t capacity);
 BradyResult bradyOpen(const char* address, const BradyOwnership& ownership, BradySession& session);
 BradyResult bradyStatus(BradySession& session, uint32_t wait_ms);
+// job_name is a log label; session.job_name holds the unique wire correlation name.
 BradyResult bradyPrint(BradySession& session, const LabelRaster& image, const char* job_name);
 BradyResult bradyCut(BradySession& session);
 BradyResult bradyClose(BradySession& session);
