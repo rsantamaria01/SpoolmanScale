@@ -23,13 +23,14 @@ This file, the `esp32-brady-test` env and anything under `fork/` are fork-only. 
 - `scripts/check.sh`
 - `python3 scripts/check_conventions.py` (the baseline may stay or fall, never rise)
 - `python3 test/<file>.py` for every file in `test/`, plus new host tests for pure logic (packet framing, GUID byte order, VGL encoding)
-- `pio run -e wt32-sc01-plus` still builds (the real scale target, ESP32-S3). The first build in every new worktree ends with `FileNotFoundError ... .pio/build/wt32-sc01-plus/.sconsign313.tmp` (pioarduino rebuilds the core for `custom_sdkconfig`): rerun once, it passes in about 3 min. Never change the shared PlatformIO install for it.
+- `pio run -e wt32-sc01-plus` still builds (the real scale target, ESP32-S3), using the default PlatformIO folder /root/.platformio.
+- Build and flash the plain-ESP32 env ONLY from its own PlatformIO folder: `PLATFORMIO_CORE_DIR=/root/.platformio-brady pio run -e esp32-brady-test`. Reason: the scale env's `custom_sdkconfig` rebuilds the shared Arduino libs and forces a platform reinstall; pioarduino's inner Core (penv, 6.2.0.post1) then fails the platform's ">=6.2.0" check, removes the platform and the build dies with a missing `.sconsign313.tmp`. If that error still appears, rerun once (a fresh platform install passes). Never edit either PlatformIO install by hand.
 - `pio run -e esp32-brady-test` builds when you touch the Brady code
 
 ## Hardware on this box (rs-lxc-33, CT 159)
 - A plain ESP32 dev board (not S3; check the chip with `esptool chip_id`) is plugged into Proxmox node rs-srv-01 and bind-mounted into this container as `/dev/ttyUSB0` (or `/dev/ttyACM0`). With no board plugged in, these paths are empty placeholder files.
 - The bind mount happens only at container start. After the board is replugged, someone with host access must run `pct reboot 159`. You cannot: ask Raul.
-- Flash: `pio run -e esp32-brady-test -t upload --upload-port /dev/ttyUSB0`. Read the serial port non-interactively with a timeout (pyserial is in PlatformIO's venv); never leave an interactive monitor blocking a turn.
+- Flash: `PLATFORMIO_CORE_DIR=/root/.platformio-brady pio run -e esp32-brady-test -t upload --upload-port /dev/ttyUSB0`. Read the serial port non-interactively with a timeout (pyserial is in PlatformIO's venv); never leave an interactive monitor blocking a turn.
 - A Brady M211 sits within BLE range of rs-srv-01. Only Raul can see the paper. After every print, ask him what came out (`question ask`) and say what he should expect to see.
 - The M211 accepts one owner at a time. If the session claim fails, ask Raul to hold the power button for 5 s until the Bluetooth LED pulses, or to close the Brady Express Labels app.
 
