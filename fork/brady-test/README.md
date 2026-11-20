@@ -13,8 +13,10 @@ After A, verify the selected path is a character device and identify the chip wi
 PlatformIO's esptool (`chip_id`) before uploading. The board must be classic ESP32.
 
 ```sh
-pio run -e esp32-brady-test
-pio run -e esp32-brady-test -t upload --upload-port /dev/ttyUSB0
+PLATFORMIO_CORE_DIR=/root/.platformio-brady pio run -e esp32-brady-test
+PLATFORMIO_CORE_DIR=/root/.platformio-brady pio run -e esp32-brady-test -t upload --upload-port /dev/ttyUSB0
+# Pyserial for bounded serial sessions:
+/root/.platformio-brady/penv/bin/python
 ```
 
 Use bounded pyserial sessions at 115200 baud, never a blocking monitor. Save logs
@@ -36,11 +38,14 @@ work around an ownership error without asking Raul.
 - `cut`: explicit cut command; result is unconfirmed, not proof of a physical cut.
 - `disconnect`: close GATT, preserving persisted ownership.
 
-Printing requires all four geometry properties and all seven requested safety
-properties to be valid and clear. The experimental harness accepts only raw PICL
-width/x/height/y = 75/0/0/0, paired with a 152-dot page in the successful M21-750
-app capture. Raw properties remain unchanged; this is not a general unit conversion.
-Other geometry fails closed. Both labels use 56 rows (about 7 mm at 203 dpi),
+Printing requires all four geometry properties, die-cut flag (0013), cartridge
+ID (002A) and all seven requested safety properties to be valid and clear.
+The verified M21-750 reports raw PICL width/x/height/y = 75/0/0/0 and cartridge
+ID 72, producing an unchanged 152-dot page. The assumed 1/100-inch PICL units
+and nonzero offsets are experimental for other cartridges, bounded to the head;
+unknown stock never claims the M21-750 part name. Continuous media uses the caller's
+length; die-cut media requires the reported fixed length. Both sample labels use
+56 rows (about 7 mm at 203 dpi) on the current continuous cartridge,
 at Raul's request to minimize waste. The captured app page was 152x114; the shorter
 page was accepted in both ESP32 paper tests. Actual tape length and minimum
 physical feed/cut length remain unmeasured. This fits all four sample text rows
@@ -81,8 +86,9 @@ See [sanitized hardware evidence](hardware-evidence.md).
 
 Still to verify: measured grid dimensions, full-width edge precision and physical
 feed/cut length. The 152-dot page does not prove all 152 dots are printable.
-Nonzero offsets and general PICL units remain unsupported; the raw 75 -> 152
-mapping and hardcoded M21-750 part are stock-specific. Ownership flag variants
+Nonzero offsets and general PICL units are experimental and require a real cartridge
+to calibrate; only the raw 75 -> 152 mapping and chip ID 72 with M21-750 part name
+have paper confirmation. Ownership flag variants
 and long-transfer flush behavior also need further testing. The Python source contains BlueZ-specific workarounds;
 they are not assumed to apply to ESP32. No mixed-write retries or print replay.
 Ask Raul again before any upload or print; software checks are not hardware proof.
@@ -92,7 +98,10 @@ in Hindsight `personal`, under `spoolmanscale/learnings`.
 
 ## Software checks
 
-Install pinned dependencies first (`pio pkg install -e wt32-sc01-plus`) for the
-ArduinoJson-backed host tests. Run every `test/*.py` directly, `scripts/check.sh`,
-`python3 scripts/check_conventions.py`, and both firmware builds. This directory
+Build the scale env with default `pio run -e wt32-sc01-plus`; always build and
+flash the plain-ESP32 env with `PLATFORMIO_CORE_DIR=/root/.platformio-brady`.
+They must not share `/root/.platformio`: alternating environments rebuilds the
+scale's custom Arduino core and can trigger a platform reinstall failure. Use the
+scale env's installed ArduinoJson for host tests. Run every `test/*.py` directly,
+`scripts/check.sh`, `python3 scripts/check_conventions.py`, and both firmware builds. This directory
 and environment are fork-only and must not accompany an upstream patch.
