@@ -1,14 +1,6 @@
 #pragma once
 #include "services/brady.h"
 
-// Observed M21-750 pairing only; PICL units for other cartridges are unverified.
-inline bool bradyGeometryExperiment(const BradyStatus& raw, BradyStatus& out) {
-  if (raw.width != 75 || raw.height || raw.x || raw.y) return false;
-  out = raw;
-  out.width = 152;
-  return true;
-}
-
 // Original 3x5 diagnostic glyphs, GPL-3.0 like this repository; no vendor font.
 inline uint16_t bradyGlyph(char c) {
   static const char letters[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";

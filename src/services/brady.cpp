@@ -18,9 +18,9 @@ static const uint8_t PICL_GUID[] = {
   0x86, 0x78, 0x20, 0xef, 0xe9, 0x7b, 0xc2, 0xd3
 };
 static const char* PROPERTY_IDS[] = {
-  "000C", "000D", "000E", "000F", "0005", "0006", "0009", "000A", "0021", "0025", "0027"
+  "000C", "000D", "000E", "000F", "0005", "0006", "0009", "000A", "0021", "0025", "0027", "0013", "002A"
 };
-constexpr uint16_t REQUIRED = (1u << 11) - 1;
+constexpr uint16_t REQUIRED = (1u << 13) - 1;
 constexpr uint32_t STATUS_WAIT_MS = 12000, PRINT_WAIT_MS = 60000;
 
 static uint32_t readU32(const uint8_t* p) {
@@ -105,14 +105,27 @@ static void applyProperty(BradySession& s, JsonObjectConst item) {
     if (strcmp(result, "Failed") == 0) s.status.job = BRADY_JOB_FAILED;
     return;
   }
-  for (unsigned i = 0; i < 11; ++i) {
+  for (unsigned i = 0; i < 13; ++i) {
     if (strcmp(id, PROPERTY_IDS[i]) != 0) continue;
     const uint16_t bit = 1u << i;
     s.status.valid &= ~bit;
     if (!success) return;
+    if (i == 12) {
+      if (!*value || strlen(value) > 64) return;
+      snprintf(s.status.cartridge,sizeof(s.status.cartridge),"%s",value);
+      s.status.valid |= bit;
+      return;
+    }
+    if (i == 11) {
+      if (strcmp(value,"True") == 0) s.status.die_cut = true;
+      else if (strcmp(value,"False") == 0) s.status.die_cut = false;
+      else return;
+      s.status.valid |= bit;
+      return;
+    }
     if (i < 4) {
       uint16_t parsed;
-      if (!number(value, i == 0 ? 192 : 7310, parsed) || (i == 0 && !parsed)) return;
+      if (!number(value, i < 2 ? 9999 : 7310, parsed) || (i == 0 && !parsed)) return;
       uint16_t* fields[] = {&s.status.width, &s.status.x, &s.status.height, &s.status.y};
       *fields[i] = parsed;
     } else {
@@ -155,8 +168,8 @@ bool bradyReceive(BradySession& s, const uint8_t* data, size_t length) {
   return true;
 }
 bool bradyReady(const BradyStatus& s) {
-  return s.valid == REQUIRED && !s.errors && s.width && s.width <= 192 &&
-         uint32_t(s.width) + s.x <= 9999 && uint32_t(s.height) + 2u * s.y <= 9999;
+  BradyStatus dots{};
+  return s.valid == REQUIRED && !s.errors && bradyGeometryExperiment(s,dots);
 }
 
 static bool rasterValid(const LabelRaster& image) {
@@ -178,7 +191,9 @@ static bool jobNameValid(const char* name) {
 size_t bradyVgl(const LabelRaster& image, const BradyStatus& s, const char* name,
                uint8_t* out, size_t capacity) {
   if (!out || !rasterValid(image) || !jobNameValid(name) || strlen(name) != 32 ||
-      image.width != s.width || s.x || s.y || (s.height && image.height != s.height)) return 0;
+      image.width != s.width || uint32_t(s.width) + s.x > 192 ||
+      uint32_t(image.height) + s.y > 7310 ||
+      (s.die_cut ? (!s.height || image.height != s.height) : s.height != 0)) return 0;
   for (const char* p = name; *p; ++p) if (hexDigit(*p) < 0) return 0;
   size_t n = 0;
   bool fits = true;
@@ -198,6 +213,10 @@ size_t bradyVgl(const LabelRaster& image, const BradyStatus& s, const char* name
   static const uint8_t image_start[] = {2,'W',0,2,'A',2,'Q',2,'a',
     2,'I','B','U','l','b','l','0',13,'X',0,0,'Y',0,0};
   append(image_start,sizeof(image_start));
+  if (fits) {
+    out[n - 5] = uint8_t(s.x); out[n - 4] = uint8_t(s.x >> 8);
+    out[n - 2] = uint8_t(s.y); out[n - 1] = uint8_t(s.y >> 8);
+  }
   for (unsigned y = 0; y < image.height && fits; ++y) {
     uint8_t row[194] = {0x81,0};
     const uint8_t* pixels = image.pixels + size_t(y) * image.row_bytes;
@@ -277,7 +296,8 @@ BradyResult bradyOpen(const char* address, const BradyOwnership& ownership, Brad
   logSDf("Brady: session claim written, flag=%u",unsigned(bytes[16]));
   static const char subscribe[] = "{\"PropertySubscribeRequests\":[{\"ID\":\"000C\"},{\"ID\":\"000D\"},"
       "{\"ID\":\"000E\"},{\"ID\":\"000F\"},{\"ID\":\"0005\"},{\"ID\":\"0006\"},{\"ID\":\"0009\"},"
-      "{\"ID\":\"000A\"},{\"ID\":\"0021\"},{\"ID\":\"0025\"},{\"ID\":\"0027\"},{\"ID\":\"0029\"}]}";
+      "{\"ID\":\"000A\"},{\"ID\":\"0021\"},{\"ID\":\"0025\"},{\"ID\":\"0027\"},"
+      "{\"ID\":\"0013\"},{\"ID\":\"002A\"},{\"ID\":\"0029\"}]}";
   if (!request(s,subscribe)) { bradyClose(s); return BRADY_TRANSPORT; }
   return bradyStatus(s,STATUS_WAIT_MS);
 }
@@ -287,8 +307,17 @@ BradyResult bradyPrint(BradySession& s, const LabelRaster& image, const char* na
   const BradyStatus raw = s.status;
   if (!drain(s) || s.malformed || !bradyReady(s.status)) return BRADY_INVALID_STATUS;
   if (raw.width != s.status.width || raw.height != s.status.height ||
-      raw.x != s.status.x || raw.y != s.status.y) return BRADY_INVALID_STATUS;
+      raw.x != s.status.x || raw.y != s.status.y || raw.die_cut != s.status.die_cut ||
+      strcmp(raw.cartridge,s.status.cartridge) != 0) return BRADY_INVALID_STATUS;
+  BradyStatus dots{};
+  if (!bradyGeometryExperiment(s.status,dots)) return BRADY_INVALID_STATUS;
+  if (geometry && (geometry->width != dots.width || geometry->x != dots.x ||
+                   geometry->height != dots.height || geometry->y != dots.y ||
+                   geometry->die_cut != dots.die_cut)) return BRADY_INVALID_RASTER;
   if (!jobNameValid(name)) return BRADY_INVALID_RASTER;
+  if (s.status.width != 75 || s.status.x || s.status.height || s.status.y || s.status.die_cut)
+    logSDf("Brady: EXPERIMENTAL PICL geometry width=%u x=%u height=%u y=%u die_cut=%u; 1/100-inch units and offsets unverified",
+           s.status.width,s.status.x,s.status.height,s.status.y,unsigned(s.status.die_cut));
   // A boot nonce plus monotonic counter survives session reopen and caller name reuse.
   static const uint32_t nonce[] = {esp_random(),esp_random(),esp_random()};
   static uint32_t sequence = 0;
@@ -298,7 +327,7 @@ BradyResult bradyPrint(BradySession& s, const LabelRaster& image, const char* na
            (unsigned long)nonce[1],(unsigned long)nonce[2],(unsigned long)++sequence);
   uint8_t* bytes = static_cast<uint8_t*>(malloc(BRADY_MAX_JOB_BYTES));
   if (!bytes) return BRADY_INVALID_RASTER;
-  const size_t n = bradyVgl(image,geometry ? *geometry : s.status,wire_name,bytes,BRADY_MAX_JOB_BYTES);
+  const size_t n = bradyVgl(image,dots,wire_name,bytes,BRADY_MAX_JOB_BYTES);
   if (!n) { free(bytes); return BRADY_INVALID_RASTER; }
   snprintf(s.job_name,sizeof(s.job_name),"%s",wire_name); s.status.job = BRADY_JOB_PENDING;
   logSDf("Brady: submit %s as job %s",name,s.job_name);
