@@ -9,6 +9,7 @@ source = r'''
 #include <cassert>
 #include <vector>
 #include <string>
+#include <algorithm>
 static bool connected=false;
 static std::vector<uint8_t> incoming;
 static std::string selected;
@@ -87,10 +88,10 @@ int main(){
  property(s,"000C","75"); property(s,"000D","0"); property(s,"000E","0"); property(s,"000F","0");
  for(auto id:{"0005","0006","0009","000A","0021","0025","0027"})property(s,id,"False");
  assert(!bradyReady(s.status));
- property(s,"0013","False");property(s,"002A","M21-750-595-WT");
+ property(s,"0013","False");property(s,"002A","72");
  property(s,"002A","","Failed");assert(!bradyReady(s.status));
- property(s,"002A","M21-750-595-WT");
- assert(bradyReady(s.status) && !s.status.die_cut && strcmp(s.status.cartridge,"M21-750-595-WT")==0);
+ property(s,"002A","72");
+ assert(bradyReady(s.status) && !s.status.die_cut && strcmp(s.status.cartridge,"72")==0);
  property(s,"0013","True");assert(s.status.die_cut && !bradyReady(s.status));
  property(s,"0013","unknown");assert(!bradyReady(s.status));
  property(s,"0013","False");
@@ -142,12 +143,18 @@ int main(){
  image.width=0;assert(!bradyVgl(image,geometry,wire,vgl.data(),vgl.size()));image.width=9;
  image.length=BRADY_MAX_JOB_BYTES+1;assert(!bradyVgl(image,geometry,wire,vgl.data(),vgl.size()));image.length=4;
  uint8_t wide_pixels[19*56]{};LabelRaster wide{152,56,19,wide_pixels,sizeof(wide_pixels),152};
- BradyStatus converted{};converted.width=152;
+ BradyStatus converted{};converted.width=152;strcpy(converted.cartridge,"72");
  n=bradyVgl(wide,converted,wire,vgl.data(),vgl.size());assert(n);
  const uint8_t dims[]={2,'K',0,12,'0','1','5','2','0','0','5','6'};
  assert(memcmp(vgl.data()+72,dims,sizeof(dims))==0);
  const uint8_t blank_row[]={0x81,2,127,23};
  assert(memcmp(vgl.data()+108,blank_row,sizeof(blank_row))==0);
+ BradyStatus other=converted;strcpy(other.cartridge,"different-chip");
+ size_t other_n=bradyVgl(wide,other,wire,vgl.data(),vgl.size());assert(other_n);
+ const uint8_t no_part[]={13,2,'p','+','0','0'};
+ assert(memcmp(vgl.data()+37,no_part,sizeof(no_part))==0);
+ const uint8_t known_part[]={2,'K',0,9,'M','2','1','-','7','5','0'};
+ assert(std::search(vgl.begin(),vgl.begin()+other_n,std::begin(known_part),std::end(known_part))==vgl.begin()+other_n);
  memset(wide_pixels,0xff,sizeof(wide_pixels));
  n=bradyVgl(wide,converted,wire,vgl.data(),vgl.size());assert(n);
  const uint8_t black_row[]={0x81,2,255,151};
@@ -158,6 +165,9 @@ int main(){
  converted.x=2;converted.y=3;
  assert(bradyVgl(wide,converted,wire,vgl.data(),vgl.size()));
  assert(vgl[103]==2 && vgl[104]==0 && vgl[106]==3 && vgl[107]==0);
+ const uint8_t offset_page[]={2,'K',0,12,'0','1','5','4','0','0','5','9'};
+ assert(memcmp(vgl.data()+72,offset_page,sizeof(offset_page))==0);
+ assert(vgl[n-16]=='Y' && vgl[n-15]==59 && vgl[n-14]==0);
  converted.x=41;assert(!bradyVgl(wide,converted,wire,vgl.data(),vgl.size()));
  converted.x=0;converted.y=1;assert(bradyVgl(wide,converted,wire,vgl.data(),vgl.size()));
  converted.y=0;converted.die_cut=true;converted.height=56;

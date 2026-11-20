@@ -207,8 +207,13 @@ size_t bradyVgl(const LabelRaster& image, const BradyStatus& s, const char* name
   append(name_cmd,sizeof(name_cmd)); append(name,32);
   static const uint8_t settings[] = {13,2,'K',0,9,'M','2','1','-','7','5','0',13,
     2,'p','+','0','0',2,'o','+','0','0',2,'O','+','0','0',2,'b','+','0','0',2,'M',1,2,'K',0,12};
-  append(settings,sizeof(settings));
-  char digits[11]; snprintf(digits,sizeof(digits),"%04u%04u",image.width,image.height);
+  if (strcmp(s.cartridge,"72") == 0) append(settings,sizeof(settings));
+  else {
+    // No licensed 002A-to-part table: do not misidentify unknown stock as M21-750.
+    append(settings,1); append(settings+12,sizeof(settings)-12);
+  }
+  const uint16_t page_width = image.width+s.x, page_height = image.height+s.y;
+  char digits[11]; snprintf(digits,sizeof(digits),"%04u%04u",page_width,page_height);
   append(digits,8);
   static const uint8_t image_start[] = {2,'W',0,2,'A',2,'Q',2,'a',
     2,'I','B','U','l','b','l','0',13,'X',0,0,'Y',0,0};
@@ -230,7 +235,8 @@ size_t bradyVgl(const LabelRaster& image, const BradyStatus& s, const char* name
     }
     append(row,size_t(row[1]) + 2);
   }
-  const uint8_t end[] = {'Y',uint8_t(image.height),uint8_t(image.height >> 8),255,255,13,
+  const uint16_t end_y = image.height + s.y;
+  const uint8_t end[] = {'Y',uint8_t(end_y),uint8_t(end_y >> 8),255,255,13,
                          2,'a',2,'G',2,'A',2,'K',0,11};
   append(end,sizeof(end));
   return fits ? n : 0;
@@ -315,7 +321,8 @@ BradyResult bradyPrint(BradySession& s, const LabelRaster& image, const char* na
                    geometry->height != dots.height || geometry->y != dots.y ||
                    geometry->die_cut != dots.die_cut)) return BRADY_INVALID_RASTER;
   if (!jobNameValid(name)) return BRADY_INVALID_RASTER;
-  if (s.status.width != 75 || s.status.x || s.status.height || s.status.y || s.status.die_cut)
+  if (s.status.width != 75 || s.status.x || s.status.height || s.status.y || s.status.die_cut ||
+      strcmp(s.status.cartridge,"72") != 0)
     logSDf("Brady: EXPERIMENTAL PICL geometry width=%u x=%u height=%u y=%u die_cut=%u; 1/100-inch units and offsets unverified",
            s.status.width,s.status.x,s.status.height,s.status.y,unsigned(s.status.die_cut));
   // A boot nonce plus monotonic counter survives session reopen and caller name reuse.
