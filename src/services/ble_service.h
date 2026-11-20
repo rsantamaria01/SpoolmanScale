@@ -47,6 +47,14 @@ void bleSetEnabled(bool on);
 int bleScan(BleDevice* out, int capacity, uint32_t duration_ms, BleProgressFn progress,
             const char* preferred = "");
 
+struct BleScanConfig {
+  uint32_t duration_ms = 4000;
+  BleProgressFn progress = nullptr;
+  const char* preferred = "";
+  const char* service_uuid = nullptr;
+};
+int bleScan(BleDevice* out, int capacity, const BleScanConfig& config);
+
 // A write session to one characteristic of one device: start the stack,
 // connect, negotiate the MTU, write the blocks in order and in chunks the
 // link accepts, disconnect, release the stack. This is what a label printer
@@ -109,7 +117,15 @@ bool bleStackStuck();
 // Where the device is spoken to: a service by UUID, "ff00" or the dashed
 // 128-bit form, and the first characteristic in it with all of need_props.
 // NIIMBOT names no characteristic UUID; it is found by shape.
-struct BleTalkEndpoint { const char* service_uuid; uint8_t need_props; };
+struct BleTalkEndpoint {
+  const char* service_uuid;
+  uint8_t need_props;
+  const char* write_uuid = nullptr;
+  const char* notify_uuid = nullptr;  // explicit response supports indications too
+};
+// Explicit selection stays in the opened service; failure clears the write target.
+// Acknowledged writes are never replayed after an ambiguous failure.
+bool bleTalkSelectWrite(const char* uuid, bool response);
 
 // Stack up, find, connect, subscribe. BLE_WRITE_NO_CHARACTERISTIC when the
 // device has nothing of that shape; the log then lists what it has.
@@ -123,6 +139,8 @@ size_t bleTalkMaxWrite();   // the MTU minus the ATT header; 0 outside a session
 // up to wait_ms for the first byte. 0 on timeout or when the link is gone.
 size_t bleTalkRead(uint8_t* out, size_t max, uint32_t wait_ms);
 bool   bleTalkConnected();
+// Sticky until the next open; explicit-endpoint drivers must reject truncated replies.
+bool   bleTalkRxOverflowed();
 // The driver says where it stands, for the card over the session.
 void   bleTalkSetPhase(BleSessionPhase phase);
 void   bleTalkSetProgress(size_t done, size_t total);
