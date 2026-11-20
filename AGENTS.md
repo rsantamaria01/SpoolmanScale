@@ -23,7 +23,7 @@ This file, the `esp32-brady-test` env and anything under `fork/` are fork-only. 
 - `scripts/check.sh`
 - `python3 scripts/check_conventions.py` (the baseline may stay or fall, never rise)
 - `python3 test/<file>.py` for every file in `test/`, plus new host tests for pure logic (packet framing, GUID byte order, VGL encoding)
-- `pio run -e wt32-sc01-plus` still builds (the real scale target, ESP32-S3)
+- `pio run -e wt32-sc01-plus` still builds (the real scale target, ESP32-S3). The first build in every new worktree ends with `FileNotFoundError ... .pio/build/wt32-sc01-plus/.sconsign313.tmp` (pioarduino rebuilds the core for `custom_sdkconfig`): rerun once, it passes in about 3 min. Never change the shared PlatformIO install for it.
 - `pio run -e esp32-brady-test` builds when you touch the Brady code
 
 ## Hardware on this box (rs-lxc-33, CT 159)
