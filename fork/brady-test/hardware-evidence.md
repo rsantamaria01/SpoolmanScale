@@ -14,6 +14,9 @@ ownership identity is included.
   explicitly maps only this observed geometry to a 152-dot raster width.
 - Both generated jobs used a 152x56-dot page, RLE rows and fresh 32-hex wire names.
   Each terminal 0029 reply matched that job's exact name with `:Successful`.
+- Geometry regression on this same stock: 0013=False, 002A=72, raw 75/0/0/0;
+  one new 152x56 border/grid/BRADY OK job returned a correlated `Successful`.
+  Raul answered Q3 A: the paper looks the same as before.
 
 ## Paper confirmations
 
@@ -33,8 +36,10 @@ The working BLE stream starts with JobName, has no 12-byte outer file wrapper,
 uses PartName M21-750 and ends with JobNameEnd. The encoder generates its own
 raster and correlation name; no vendor font, binary or template was copied.
 
-This is a stock-specific bring-up, not a general media-unit conversion. Nonzero
-offsets are rejected. Actual tape length, minimum feed/cut length, measured grid
+The follow-up driver converts PICL sizes and offsets under an unverified
+1/100-inch hypothesis with bounded head geometry. Nonzero offsets and other
+cartridges have host tests but no paper verification. Actual tape length,
+minimum feed/cut length, measured grid
 spacing and full-width edge precision were not measured. Other cartridges,
 long transfers, reconnect stress, M511 and scale UI integration remain untested
 or outside scope. Do not automatically replay an unconfirmed job.

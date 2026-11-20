@@ -25,8 +25,21 @@ enum BradyJobResult : uint8_t { BRADY_JOB_PENDING, BRADY_JOB_SUCCESS, BRADY_JOB_
 struct BradyStatus {
   uint16_t width = 0, x = 0, height = 0, y = 0;
   uint16_t valid = 0, errors = 0;
+  bool die_cut = false;
+  char cartridge[65]{};
   BradyJobResult job = BRADY_JOB_PENDING;
 };
+// PICL units are a 1/100-inch hypothesis; only 75/0/0/0 -> 152 dots is verified.
+inline bool bradyGeometryExperiment(const BradyStatus& raw, BradyStatus& dots) {
+  auto convert = [](uint16_t value) { return (uint32_t(value) * 203 + 50) / 100; };
+  const uint32_t width = convert(raw.width), x = convert(raw.x);
+  const uint32_t height = convert(raw.height), y = convert(raw.y);
+  if (!width || width + x > 192 || height > 7310 || y + height > 7310 ||
+      (raw.die_cut && !height) || (!raw.die_cut && height)) return false;
+  dots = raw;
+  dots.width = width; dots.x = x; dots.height = height; dots.y = y;
+  return true;
+}
 struct BradyOwnership { const char* guid; bool first_claim; };
 struct BradySession {
   BradyStatus status{};
@@ -52,7 +65,7 @@ size_t bradyVgl(const LabelRaster& image, const BradyStatus& status, const char*
 BradyResult bradyOpen(const char* address, const BradyOwnership& ownership, BradySession& session);
 BradyResult bradyStatus(BradySession& session, uint32_t wait_ms);
 // job_name is a log label; session.job_name holds the unique wire correlation name.
-// Explicit raster geometry does not change the raw PICL status or its safety checks.
+// Optional raster geometry must match converted raw PICL; media changes are refused.
 BradyResult bradyPrint(BradySession& session, const LabelRaster& image, const char* job_name,
                        const BradyStatus* geometry = nullptr);
 BradyResult bradyCut(BradySession& session);

@@ -40,8 +40,8 @@ static void result(BradyResult value) {
 }
 static void showStatus() {
   const BradyStatus& s = session.status;
-  Serial.printf("PICL width=%u x=%u height=%u y=%u valid=%04x errors=%04x job=%u\n",
-                s.width,s.x,s.height,s.y,s.valid,s.errors,unsigned(s.job));
+  Serial.printf("PICL width=%u x=%u height=%u y=%u die_cut=%u cartridge=%s valid=%04x errors=%04x job=%u\n",
+                s.width,s.x,s.height,s.y,unsigned(s.die_cut),s.cartridge,s.valid,s.errors,unsigned(s.job));
 }
 static void printLabel(bool spool) {
   if (!session.open) { result(BRADY_TRANSPORT); return; }
