@@ -93,7 +93,13 @@ int main(){
  strcpy(s.job_name,"new-job");
  property(s,"0029","old-job: Successful");assert(s.status.job==BRADY_JOB_PENDING);
  property(s,"0029","old-job: Failed");assert(s.status.job==BRADY_JOB_PENDING);
+ property(s,"0029","new-job:Successful");assert(s.status.job==BRADY_JOB_SUCCESS);
+ s.status.job=BRADY_JOB_PENDING;
+ for(auto bad:{"new-job-extra:Successful","new-job:  Successful","new-job:Successful junk","new:Successful","new-job"}){
+ property(s,"0029",bad);assert(s.status.job==BRADY_JOB_PENDING);
+ }
  property(s,"0029","new-job: Successful");assert(s.status.job==BRADY_JOB_SUCCESS);
+ property(s,"0029","new-job:Failed");assert(s.status.job==BRADY_JOB_FAILED);
  property(s,"0029","new-job: Failed");assert(s.status.job==BRADY_JOB_FAILED);
  for(auto entry:{
  "{\"ID\":\"000C\",\"Value\":\"125\\u0000junk\",\"Status\":\"Successful\"}",
@@ -108,16 +114,40 @@ int main(){
  uint8_t pixels[]={0x80,0x80,0,0};LabelRaster image{9,2,2,pixels,4,9};
  BradyStatus geometry=s.status;geometry.width=9;geometry.height=2;geometry.x=0;geometry.y=0;
  std::vector<uint8_t> vgl(BRADY_MAX_JOB_BYTES);
- n=bradyVgl(image,geometry,"job-1",vgl.data(),vgl.size());assert(n>100);
- assert(readU32(vgl.data())==1 && readU32(vgl.data()+4)==n-8);
- size_t job=8+readU32(vgl.data()+8);assert(memcmp(vgl.data()+job,"\x02K\0\x0a" "job-1\r",10)==0);
- const uint8_t rows[]={0x80,2,0x80,0x80,0x80,2,0,0,0xff,0xff,13,2,65,2,71};
- assert(memcmp(vgl.data()+n-sizeof(rows),rows,sizeof(rows))==0);
+ const char* wire="0123456789abcdef0123456789abcdef";
+ n=bradyVgl(image,geometry,wire,vgl.data(),vgl.size());assert(n);
+ const uint8_t expected[]={2,'K',0,10,
+ '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f',
+ '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f',13,
+ 2,'K',0,9,'M','2','1','-','7','5','0',13,
+ 2,'p','+','0','0',2,'o','+','0','0',2,'O','+','0','0',2,'b','+','0','0',
+ 2,'M',1,2,'K',0,12,'0','0','0','9','0','0','0','2',2,'W',0,2,'A',2,'Q',2,'a',
+ 2,'I','B','U','l','b','l','0',13,'X',0,0,'Y',0,0,
+ 0x81,3,0x80,6,0x80,0x81,1,8,'Y',2,0,255,255,13,2,'a',2,'G',2,'A',2,'K',0,11};
+ assert(n==sizeof(expected) && memcmp(vgl.data(),expected,n)==0);
+ assert(!bradyVgl(image,geometry,wire,vgl.data(),n-1));
+ assert(bradyVgl(image,geometry,wire,vgl.data(),n)==n);
  assert(!bradyVgl(image,geometry,"bad\rname",vgl.data(),vgl.size()));
- assert(!bradyVgl(image,geometry,"ok",vgl.data(),10));
- pixels[1]=0x81;assert(!bradyVgl(image,geometry,"ok",vgl.data(),vgl.size()));pixels[1]=0x80;
- image.width=0;assert(!bradyVgl(image,geometry,"ok",vgl.data(),vgl.size()));image.width=9;
- image.length=BRADY_MAX_JOB_BYTES+1;assert(!bradyVgl(image,geometry,"ok",vgl.data(),vgl.size()));image.length=4;
+ assert(!bradyVgl(image,geometry,wire,vgl.data(),10));
+ pixels[1]=0x81;assert(!bradyVgl(image,geometry,wire,vgl.data(),vgl.size()));pixels[1]=0x80;
+ image.width=0;assert(!bradyVgl(image,geometry,wire,vgl.data(),vgl.size()));image.width=9;
+ image.length=BRADY_MAX_JOB_BYTES+1;assert(!bradyVgl(image,geometry,wire,vgl.data(),vgl.size()));image.length=4;
+ uint8_t wide_pixels[19*56]{};LabelRaster wide{152,56,19,wide_pixels,sizeof(wide_pixels),152};
+ BradyStatus converted{};converted.width=152;
+ n=bradyVgl(wide,converted,wire,vgl.data(),vgl.size());assert(n);
+ const uint8_t dims[]={2,'K',0,12,'0','1','5','2','0','0','5','6'};
+ assert(memcmp(vgl.data()+72,dims,sizeof(dims))==0);
+ const uint8_t blank_row[]={0x81,2,127,23};
+ assert(memcmp(vgl.data()+108,blank_row,sizeof(blank_row))==0);
+ memset(wide_pixels,0xff,sizeof(wide_pixels));
+ n=bradyVgl(wide,converted,wire,vgl.data(),vgl.size());assert(n);
+ const uint8_t black_row[]={0x81,2,255,151};
+ assert(memcmp(vgl.data()+108,black_row,sizeof(black_row))==0);
+ std::vector<uint8_t> noisy(19*300,0xaa);LabelRaster large{152,300,19,noisy.data(),noisy.size(),152};
+ assert(!bradyVgl(large,converted,wire,vgl.data(),100));
+ assert(!bradyVgl(large,converted,wire,vgl.data(),vgl.size()));
+ converted.x=1;assert(!bradyVgl(wide,converted,wire,vgl.data(),vgl.size()));
+ converted.x=0;converted.y=1;assert(!bradyVgl(wide,converted,wire,vgl.data(),vgl.size()));
  unsigned before=sends;assert(bradyPrint(s,image,"offline")==BRADY_TRANSPORT&&sends==before);
  connected=true;s.open=true;s.status={};assert(bradyPrint(s,image,"unsafe")==BRADY_INVALID_STATUS&&sends==before);
  bradyClose(s);assert(!connected&&!s.open);
@@ -129,9 +159,16 @@ int main(){
  assert(bradyPrint(s,image,"unsafe-queue")==BRADY_INVALID_STATUS&&sends==before);
  s.status=geometry;incoming=queued;incoming.insert(incoming.end(),error.begin(),error.end());
  assert(bradyCut(s)==BRADY_INVALID_STATUS&&sends==before);
+ s.status=geometry;
+ incoming=packet("{\"PropertyGetResponses\":[{\"ID\":\"000C\",\"Value\":\"76\",\"Status\":\"Successful\"}]}");
+ assert(bradyPrint(s,image,"changed-media",&geometry)==BRADY_INVALID_STATUS && sends==before);
  s.status=geometry;terminal=1;active_session=&s;
  assert(bradyPrint(s,image,"fresh")==BRADY_OK);
  const std::string first_name=s.job_name;
+ assert(first_name.size()==32 && first_name.find_first_not_of("0123456789abcdef")==std::string::npos);
+ BradyStatus raw=geometry;raw.width=75;s.status=raw;
+ assert(bradyPrint(s,image,"mapped",&geometry)==BRADY_OK && s.status.width==75);
+ s.status=geometry;
  assert(bradyPrint(s,image,"other")==BRADY_OK);
  assert(bradyPrint(s,image,"fresh")==BRADY_OK);
  assert(first_name!=s.job_name);

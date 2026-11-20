@@ -1,6 +1,14 @@
 #pragma once
 #include "services/brady.h"
 
+// Observed M21-750 pairing only; PICL units for other cartridges are unverified.
+inline bool bradyGeometryExperiment(const BradyStatus& raw, BradyStatus& out) {
+  if (raw.width != 75 || raw.height || raw.x || raw.y) return false;
+  out = raw;
+  out.width = 152;
+  return true;
+}
+
 // Original 3x5 diagnostic glyphs, GPL-3.0 like this repository; no vendor font.
 inline uint16_t bradyGlyph(char c) {
   static const char letters[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -30,7 +38,7 @@ inline void bradyText(LabelRaster& image, const char* text, unsigned y, unsigned
   }
 }
 inline bool bradyTestLabel(const BradyStatus& status, bool spool, BradyCanvas canvas, LabelRaster& image) {
-  const uint16_t width = status.width, height = status.height ? status.height : 320;
+  const uint16_t width = status.width, height = status.height ? status.height : 56;
   const uint16_t row = (width+7)/8;
   if (!canvas.pixels || width < 39 || width > 192 || height < 50 || height > 7310 ||
       size_t(row)*height > canvas.capacity) return false;
@@ -39,7 +47,7 @@ inline bool bradyTestLabel(const BradyStatus& status, bool spool, BradyCanvas ca
   if (spool) {
     bradyText(image,"MAKER",3,1); bradyText(image,"PLA",13,1);
     bradyText(image,"BLUE",23,1);
-    const unsigned scale = width >= 70 && height >= 65 ? 4 : 2;
+    const unsigned scale = width >= 70 && height >= 56 ? 4 : 2;
     bradyText(image,"123",35,scale);
   } else {
     for (unsigned x = 0; x < width; ++x) { bradyDot(image,x,0); bradyDot(image,x,height-1); }

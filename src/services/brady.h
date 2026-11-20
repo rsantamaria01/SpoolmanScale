@@ -9,8 +9,10 @@
 //  Protocol facts from JonBons/hacs-brady (MIT), spec and Python
 //  reference at 19ed2251a1e95bcb102a1fc40ad48c960291d0cd,
 //  cross-referenced there to ggiesen/pybrady. No vendor code.
-//  Ownership flags, VGL geometry and raster polarity are still
-//  hypotheses until checked on paper. Not a scale UI profile.
+//  BLE VGL ordering corrected from an official-app M211 capture
+//  whose TEST output Raul confirmed (2026-11-20). Two generated
+//  152x56 RLE labels also confirmed on M21-750-595-WT stock.
+//  General media units and physical feed remain unverified. No UI profile.
 // ============================================================
 
 constexpr size_t BRADY_MAX_JOB_BYTES = 32768;
@@ -29,7 +31,7 @@ struct BradyOwnership { const char* guid; bool first_claim; };
 struct BradySession {
   BradyStatus status{};
   bool open = false, malformed = false;
-  char job_name[21]{};
+  char job_name[33]{};
   uint8_t rx[BRADY_PICL_BYTES + 20]{};
   size_t received = 0;
 };
@@ -50,6 +52,8 @@ size_t bradyVgl(const LabelRaster& image, const BradyStatus& status, const char*
 BradyResult bradyOpen(const char* address, const BradyOwnership& ownership, BradySession& session);
 BradyResult bradyStatus(BradySession& session, uint32_t wait_ms);
 // job_name is a log label; session.job_name holds the unique wire correlation name.
-BradyResult bradyPrint(BradySession& session, const LabelRaster& image, const char* job_name);
+// Explicit raster geometry does not change the raw PICL status or its safety checks.
+BradyResult bradyPrint(BradySession& session, const LabelRaster& image, const char* job_name,
+                       const BradyStatus* geometry = nullptr);
 BradyResult bradyCut(BradySession& session);
 BradyResult bradyClose(BradySession& session);

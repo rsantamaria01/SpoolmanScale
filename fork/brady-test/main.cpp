@@ -47,15 +47,17 @@ static void printLabel(bool spool) {
   if (!session.open) { result(BRADY_TRANSPORT); return; }
   const BradyResult ready = bradyStatus(session,1000);
   if (ready != BRADY_OK) { result(ready); return; }
+  BradyStatus geometry = session.status;
+  if (!bradyGeometryExperiment(session.status,geometry)) { result(BRADY_INVALID_STATUS); return; }
   uint8_t* pixels = static_cast<uint8_t*>(malloc(8192));
   LabelRaster image{};
-  if (!pixels || !bradyTestLabel(session.status,spool,{pixels,8192},image)) {
+  if (!pixels || !bradyTestLabel(geometry,spool,{pixels,8192},image)) {
     free(pixels); result(BRADY_INVALID_RASTER); return;
   }
   char name[21]; snprintf(name,sizeof(name),"%08lx-%08lx",(unsigned long)boot_id,(unsigned long)++job_id);
   Serial.printf("Printing %s, job=%s, %ux%u dots\n",spool?"MAKER / PLA / BLUE / 123":"border / 1 mm grid / BRADY OK",
                 name,image.width,image.height);
-  result(bradyPrint(session,image,name));
+  result(bradyPrint(session,image,name,&geometry));
   free(pixels);
 }
 static bool addressValid(const char* address) {

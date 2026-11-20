@@ -98,9 +98,11 @@ static void applyProperty(BradySession& s, JsonObjectConst item) {
   if (strcmp(id, "0029") == 0) {
     if (!success || !s.job_name[0]) return;
     const size_t n = strlen(s.job_name);
-    if (strncmp(value, s.job_name, n) != 0 || strncmp(value + n, ": ", 2) != 0) return;
-    if (strcmp(value + n + 2, "Successful") == 0) s.status.job = BRADY_JOB_SUCCESS;
-    if (strcmp(value + n + 2, "Failed") == 0) s.status.job = BRADY_JOB_FAILED;
+    if (strncmp(value, s.job_name, n) != 0 || value[n] != ':') return;
+    const char* result = value + n + 1;
+    if (*result == ' ') ++result;
+    if (strcmp(result, "Successful") == 0) s.status.job = BRADY_JOB_SUCCESS;
+    if (strcmp(result, "Failed") == 0) s.status.job = BRADY_JOB_FAILED;
     return;
   }
   for (unsigned i = 0; i < 11; ++i) {
@@ -167,7 +169,7 @@ static bool rasterValid(const LabelRaster& image) {
   return true;
 }
 static bool jobNameValid(const char* name) {
-  if (!name || !*name || strlen(name) > 20) return false;
+  if (!name || !*name || strlen(name) > 32) return false;
   for (const char* p = name; *p; ++p)
     if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
           (*p >= '0' && *p <= '9') || *p == '-')) return false;
@@ -175,41 +177,44 @@ static bool jobNameValid(const char* name) {
 }
 size_t bradyVgl(const LabelRaster& image, const BradyStatus& s, const char* name,
                uint8_t* out, size_t capacity) {
-  if (!out || !rasterValid(image) || !jobNameValid(name) || image.width != s.width ||
-      (s.height && image.height != s.height)) return 0;
-  const unsigned page_w = image.width + s.x, page_h = image.height + 2u * s.y;
-  if (page_w > 9999 || page_h > 9999) return 0;
-  // shortcut: page margins use live offsets symmetrically along feed; verify on M211 paper.
-  uint8_t header[256]; size_t n = 12;
-  auto append = [&](const void* bytes, size_t size) { memcpy(header + n, bytes, size); n += size; };
-  static const uint8_t start[] = {2,'a',2,'p','+','0','0',2,'o','+','0','0',2,'O','+','0','0',
-                                2,'b','+','0','0',2,'A',2,'a',2,'Q'};
-  append(start, sizeof(start));
-  const unsigned dimensions[][2] = {{page_w,page_h},{image.width,image.height},{s.x,s.y}};
-  for (unsigned i = 0; i < 3; ++i) {
-    const uint8_t command[] = {2,'K',0,uint8_t(12 + i)}; append(command,4);
-    char digits[9]; snprintf(digits,sizeof(digits),"%04u%04u",dimensions[i][0],dimensions[i][1]);
-    append(digits,8);
-  }
-  static const uint8_t settings[] = {2,'K',0,9,'M','2','1',13,2,'a',2,'M',1,2,'W',1,
-                                    2,'D','+','0','1',2,'C','+','0','1'};
+  if (!out || !rasterValid(image) || !jobNameValid(name) || strlen(name) != 32 ||
+      image.width != s.width || s.x || s.y || (s.height && image.height != s.height)) return 0;
+  for (const char* p = name; *p; ++p) if (hexDigit(*p) < 0) return 0;
+  size_t n = 0;
+  bool fits = true;
+  if (capacity > BRADY_MAX_JOB_BYTES) capacity = BRADY_MAX_JOB_BYTES;
+  auto append = [&](const void* bytes, size_t size) {
+    if (size > capacity - n) { fits = false; return; }
+    memcpy(out + n, bytes, size); n += size;
+  };
+  // The successful app BLE stream starts with JobName, not a file-container header.
+  static const uint8_t name_cmd[] = {2,'K',0,10};
+  append(name_cmd,sizeof(name_cmd)); append(name,32);
+  static const uint8_t settings[] = {13,2,'K',0,9,'M','2','1','-','7','5','0',13,
+    2,'p','+','0','0',2,'o','+','0','0',2,'O','+','0','0',2,'b','+','0','0',2,'M',1,2,'K',0,12};
   append(settings,sizeof(settings));
-  const size_t name_offset = n - 8;
-  const uint8_t name_cmd[] = {2,'K',0,10}; append(name_cmd,4); append(name,strlen(name));
-  static const uint8_t image_start[] = {13,2,'K',0,11,2,'a',2,'a',2,'I','I','B','U','l','b','l','1',13,
-                                       'X',0,0,'Y',0,0};
+  char digits[11]; snprintf(digits,sizeof(digits),"%04u%04u",image.width,image.height);
+  append(digits,8);
+  static const uint8_t image_start[] = {2,'W',0,2,'A',2,'Q',2,'a',
+    2,'I','B','U','l','b','l','0',13,'X',0,0,'Y',0,0};
   append(image_start,sizeof(image_start));
-  static const uint8_t end[] = {255,255,13,2,'A',2,'G'};
-  const size_t total = n + image.length + size_t(image.height) * 2 + sizeof(end);
-  if (total > capacity || total > BRADY_MAX_JOB_BYTES) return 0;
-  writeU32(header,1); writeU32(header+4,total-8); writeU32(header+8,name_offset);
-  memcpy(out,header,n);
-  for (unsigned y = 0; y < image.height; ++y) {
-    out[n++] = 0x80; out[n++] = uint8_t(image.row_bytes);
-    memcpy(out+n,image.pixels+size_t(y)*image.row_bytes,image.row_bytes); n += image.row_bytes;
+  for (unsigned y = 0; y < image.height && fits; ++y) {
+    uint8_t row[194] = {0x81,0};
+    const uint8_t* pixels = image.pixels + size_t(y) * image.row_bytes;
+    for (unsigned x = 0; x < image.width;) {
+      const bool black = pixels[x / 8] & (0x80u >> (x % 8));
+      unsigned run = 1;
+      while (run < 128 && x + run < image.width &&
+             bool(pixels[(x + run) / 8] & (0x80u >> ((x + run) % 8))) == black) ++run;
+      row[2 + row[1]++] = (black ? 0x80 : 0) | uint8_t(run - 1);
+      x += run;
+    }
+    append(row,size_t(row[1]) + 2);
   }
-  memcpy(out+n,end,sizeof(end));
-  return total;
+  const uint8_t end[] = {'Y',uint8_t(image.height),uint8_t(image.height >> 8),255,255,13,
+                         2,'a',2,'G',2,'A',2,'K',0,11};
+  append(end,sizeof(end));
+  return fits ? n : 0;
 }
 
 static bool pump(BradySession& s, uint32_t wait_ms) {
@@ -276,19 +281,24 @@ BradyResult bradyOpen(const char* address, const BradyOwnership& ownership, Brad
   if (!request(s,subscribe)) { bradyClose(s); return BRADY_TRANSPORT; }
   return bradyStatus(s,STATUS_WAIT_MS);
 }
-BradyResult bradyPrint(BradySession& s, const LabelRaster& image, const char* name) {
+BradyResult bradyPrint(BradySession& s, const LabelRaster& image, const char* name,
+                       const BradyStatus* geometry) {
   if (!s.open || !bleTalkConnected()) return BRADY_TRANSPORT;
+  const BradyStatus raw = s.status;
   if (!drain(s) || s.malformed || !bradyReady(s.status)) return BRADY_INVALID_STATUS;
+  if (raw.width != s.status.width || raw.height != s.status.height ||
+      raw.x != s.status.x || raw.y != s.status.y) return BRADY_INVALID_STATUS;
   if (!jobNameValid(name)) return BRADY_INVALID_RASTER;
   // A boot nonce plus monotonic counter survives session reopen and caller name reuse.
-  static const uint32_t nonce = esp_random();
+  static const uint32_t nonce[] = {esp_random(),esp_random(),esp_random()};
   static uint32_t sequence = 0;
   if (sequence == UINT32_MAX) return BRADY_INVALID_RASTER;
-  char wire_name[21];
-  snprintf(wire_name,sizeof(wire_name),"%08lx-%08lx",(unsigned long)nonce,(unsigned long)++sequence);
+  char wire_name[33];
+  snprintf(wire_name,sizeof(wire_name),"%08lx%08lx%08lx%08lx",(unsigned long)nonce[0],
+           (unsigned long)nonce[1],(unsigned long)nonce[2],(unsigned long)++sequence);
   uint8_t* bytes = static_cast<uint8_t*>(malloc(BRADY_MAX_JOB_BYTES));
   if (!bytes) return BRADY_INVALID_RASTER;
-  const size_t n = bradyVgl(image,s.status,wire_name,bytes,BRADY_MAX_JOB_BYTES);
+  const size_t n = bradyVgl(image,geometry ? *geometry : s.status,wire_name,bytes,BRADY_MAX_JOB_BYTES);
   if (!n) { free(bytes); return BRADY_INVALID_RASTER; }
   snprintf(s.job_name,sizeof(s.job_name),"%s",wire_name); s.status.job = BRADY_JOB_PENDING;
   logSDf("Brady: submit %s as job %s",name,s.job_name);
